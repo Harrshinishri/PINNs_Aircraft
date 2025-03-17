@@ -111,7 +111,7 @@ optimizer = keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
 pinn_model.compile(optimizer=optimizer, loss=physics_loss)
 
 # TRAIN THE MODEL
-print("🚀 Training Started...")
+print(" Training Started...")
 history = pinn_model.fit(
     train_features_tensor, train_targets_tensor,
     epochs=50000, batch_size=512, validation_split=0.2, verbose=0,  # 🔄 Suppressing per-epoch output
