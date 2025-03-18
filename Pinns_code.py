@@ -41,7 +41,7 @@ test_targets_tensor = tf.convert_to_tensor(test_targets_scaled, dtype=tf.float32
 # DEFINE THE PINNs MODEL (5 Hidden Layers, 60 Neurons Each)
 def create_pinn_model(input_shape, output_shape):
     inputs = keras.Input(shape=(input_shape,))
-
+    
     x = layers.Dense(60, activation="relu", kernel_regularizer=keras.regularizers.l2(0.001))(inputs)
     for _ in range(4):  # 5 hidden layers in total
         x = layers.Dropout(0.3)(x)
@@ -107,12 +107,12 @@ class CustomEpochLogger(keras.callbacks.Callback):
         if epoch % 500 == 0:  # Print every 500 epochs
             print(f"Epoch {epoch}: Training Loss = {logs['loss']:.6f}, Validation Loss = {logs['val_loss']:.6f}")
 
-# TRAIN THE MODEL (50,000 Epochs)
+# TRAIN THE MODEL (50,000 Epochs - NO Early Stopping)
 print("Training Started...")
 history = pinn_model.fit(
     train_features_tensor, train_targets_tensor,
     epochs=50000, batch_size=512, validation_split=0.2, verbose=0,
-    callbacks=[CustomEpochLogger(), keras.callbacks.EarlyStopping(monitor='val_loss', patience=500, restore_best_weights=True)]
+    callbacks=[CustomEpochLogger()]  # No EarlyStopping
 )
 
 # PLOT TRAINING LOSS CURVE
@@ -152,3 +152,4 @@ print(f"NRMSE: {nrmse:.2f}%")
 print(f"NMBE: {nmbe:.2f}%")
 print(f"REm: {rem:.2f}%")
 print("Error Metric Calculation Completed!")
+
