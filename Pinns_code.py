@@ -38,30 +38,14 @@ test_features_tensor = tf.convert_to_tensor(test_features_scaled, dtype=tf.float
 train_targets_tensor = tf.convert_to_tensor(train_targets_scaled, dtype=tf.float32)
 test_targets_tensor = tf.convert_to_tensor(test_targets_scaled, dtype=tf.float32)
 
-# SAVE NORMALIZED DATASETS (Optional)
-train_features_scaled_df = pd.DataFrame(train_features_scaled, columns=features)
-train_targets_scaled_df = pd.DataFrame(train_targets_scaled, columns=targets)
-test_features_scaled_df = pd.DataFrame(test_features_scaled, columns=features)
-test_targets_scaled_df = pd.DataFrame(test_targets_scaled, columns=targets)
-
-train_features_scaled_df.to_csv("train_features_scaled.csv", index=False)
-train_targets_scaled_df.to_csv("train_targets_scaled.csv", index=False)
-test_features_scaled_df.to_csv("test_features_scaled.csv", index=False)
-test_targets_scaled_df.to_csv("test_targets_scaled.csv", index=False)
-
-print(" Data Normalization Completed.")
-
-# DEFINE THE PINNs MODEL
+# DEFINE THE PINNs MODEL (5 Hidden Layers, 60 Neurons Each)
 def create_pinn_model(input_shape, output_shape):
     inputs = keras.Input(shape=(input_shape,))
 
-    x = layers.Dense(80, activation="relu", kernel_regularizer=keras.regularizers.l2(0.001))(inputs)
-    x = layers.Dropout(0.3)(x)
-    x = layers.Dense(80, activation="relu", kernel_regularizer=keras.regularizers.l2(0.001))(x)
-    x = layers.Dropout(0.3)(x)
-    x = layers.Dense(80, activation="relu", kernel_regularizer=keras.regularizers.l2(0.001))(x)
-    x = layers.Dropout(0.3)(x)
-    x = layers.Dense(80, activation="relu", kernel_regularizer=keras.regularizers.l2(0.001))(x)
+    x = layers.Dense(60, activation="relu", kernel_regularizer=keras.regularizers.l2(0.001))(inputs)
+    for _ in range(4):  # 5 hidden layers in total
+        x = layers.Dropout(0.3)(x)
+        x = layers.Dense(60, activation="relu", kernel_regularizer=keras.regularizers.l2(0.001))(x)
 
     outputs = layers.Dense(output_shape, activation="linear")(x)
 
@@ -73,9 +57,9 @@ input_shape = len(features)
 output_shape = len(targets)
 pinn_model = create_pinn_model(input_shape, output_shape)
 
-# FIXED PHYSICS-INFORMED LOSS FUNCTION
+# PHYSICS-INFORMED LOSS FUNCTION (As per Paper)
 def physics_loss(y_true, y_pred):
-    # Compute L_d (Data-based loss)
+    # Data-Based Loss (L_d)
     L_d = tf.reduce_mean(tf.square(y_pred - y_true))
 
     # Compute Gradients for Physics Constraints
@@ -83,39 +67,52 @@ def physics_loss(y_true, y_pred):
         tape.watch(train_features_tensor)
         y_pred_computed = pinn_model(train_features_tensor)
 
-    dS_dx = tape.gradient(y_pred_computed, train_features_tensor)[:, 0]  # ∂σ/∂x
-    dS_dy = tape.gradient(y_pred_computed, train_features_tensor)[:, 1]  # ∂σ/∂y
-    dS_dz = tape.gradient(y_pred_computed, train_features_tensor)[:, 2]  # ∂σ/∂z
+    dS_dx = tape.gradient(y_pred_computed, train_features_tensor)[:, 0]
+    dS_dy = tape.gradient(y_pred_computed, train_features_tensor)[:, 1]
+    dS_dz = tape.gradient(y_pred_computed, train_features_tensor)[:, 2]
 
     del tape  # Free memory
 
-    # Compute L_PDE (Physics loss based on governing equation)
-    Re = tf.reduce_mean(tf.square(dS_dx))  # Elasticity residual
-    Rc = tf.reduce_mean(tf.square(dS_dy))  # Constraint in y-direction
-    Rg = tf.reduce_mean(tf.square(dS_dz))  # Constraint in z-direction
+    # Governing Equation Residuals (L_pde)
+    residual_e = tf.reduce_mean(tf.square(dS_dx))
+    residual_c = tf.reduce_mean(tf.square(dS_dy))
+    residual_g = tf.reduce_mean(tf.square(dS_dz))
 
-    L_pde = (Re + Rc + Rg) / 3  # Averaging physics residuals
+    L_pde = (residual_e + residual_c + residual_g) / 3  # Averaging PDE residuals
 
-    # Total Loss: Combining L_d and L_pde
-    lambda_factor = 0.7  # As per paper
-    total_loss = lambda_factor * L_d + (1 - lambda_factor) * L_pde
+    # External Force Constraint
+    external_forces = feature_scaler.transform(train_df[features])[:, -1].reshape(-1, 1)  
+    external_forces = tf.convert_to_tensor(external_forces, dtype=tf.float32)
+    external_forces = tf.tile(external_forces, [1, 7])
+
+    force_constraint = tf.reduce_mean(tf.square(y_pred_computed - external_forces))
+
+    # Final Loss Function (λ = 0.7 from Paper)
+    lambda_d = 0.7
+    total_loss = lambda_d * L_d + (1 - lambda_d) * (L_pde + 0.05 * force_constraint)
     return total_loss
 
 # LEARNING RATE DECAY
 lr_schedule = keras.optimizers.schedules.ExponentialDecay(
     initial_learning_rate=0.0001, decay_steps=10000, decay_rate=0.9
 )
-optimizer = keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)  
+optimizer = keras.optimizers.Adam(learning_rate=lr_schedule)
 
 # COMPILE MODEL
 pinn_model.compile(optimizer=optimizer, loss=physics_loss)
 
-# TRAIN THE MODEL
-print(" Training Started...")
+# CUSTOM CALLBACK FOR LOGGING EVERY 500 EPOCHS
+class CustomEpochLogger(keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        if epoch % 500 == 0:  # Print every 500 epochs
+            print(f"Epoch {epoch}: Training Loss = {logs['loss']:.6f}, Validation Loss = {logs['val_loss']:.6f}")
+
+# TRAIN THE MODEL (50,000 Epochs)
+print("Training Started...")
 history = pinn_model.fit(
     train_features_tensor, train_targets_tensor,
-    epochs=50000, batch_size=512, validation_split=0.2, verbose=0,  # 🔄 Suppressing per-epoch output
-    callbacks=[keras.callbacks.EarlyStopping(monitor='val_loss', patience=500, restore_best_weights=True)]
+    epochs=50000, batch_size=512, validation_split=0.2, verbose=0,
+    callbacks=[CustomEpochLogger(), keras.callbacks.EarlyStopping(monitor='val_loss', patience=500, restore_best_weights=True)]
 )
 
 # PLOT TRAINING LOSS CURVE
@@ -131,11 +128,11 @@ plt.show()
 
 # EVALUATE MODEL ON TEST SET
 test_loss = pinn_model.evaluate(test_features_tensor, test_targets_tensor, verbose=1)
-print(f" Final Test Loss: {test_loss:.6f}")
+print(f"Final Test Loss: {test_loss:.6f}")
 
 # SAVE TRAINED MODEL
-pinn_model.save("/content/pinns_tf_optimized_model.h5")
-print(" Optimized PINNs Model Saved.")
+pinn_model.save("pinns_tf_optimized_model.h5")
+print("Optimized PINNs Model Saved.")
 
 # COMPUTE ERROR METRICS
 predictions = pinn_model.predict(test_features_tensor)
@@ -151,7 +148,7 @@ def compute_metrics(pred, actual):
 # Compute and Print NRMSE, NMBE, and REm
 nrmse, nmbe, rem = compute_metrics(predictions_original, actual_original)
 
-print(f" NRMSE: {nrmse:.2f}%")
-print(f" NMBE: {nmbe:.2f}%")
-print(f" REm: {rem:.2f}%")
-print(" Error Metric Calculation Completed!")
+print(f"NRMSE: {nrmse:.2f}%")
+print(f"NMBE: {nmbe:.2f}%")
+print(f"REm: {rem:.2f}%")
+print("Error Metric Calculation Completed!")
