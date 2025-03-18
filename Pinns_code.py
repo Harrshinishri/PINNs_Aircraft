@@ -7,13 +7,24 @@ from tensorflow.keras import layers
 from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 
+# ENABLE GPU
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        tf.config.set_visible_devices(gpus[0], 'GPU')  
+        print("TensorFlow is using GPU!")
+    except RuntimeError as e:
+        print(e)
+
 # SET SEED FOR REPRODUCIBILITY
 np.random.seed(42)
 tf.random.set_seed(42)
 
 # LOAD DATASETS
-train_df = pd.read_csv("train.csv")
-test_df = pd.read_csv("test.csv")
+train_df = pd.read_csv("/media/ubuntu/CLEM/my_env/Pinns_aircraft/train.csv")
+test_df = pd.read_csv("/media/ubuntu/CLEM/my_env/Pinns_aircraft/test.csv")
 
 # CLEAN COLUMN NAMES
 train_df.columns = train_df.columns.str.strip()
@@ -41,14 +52,13 @@ test_targets_tensor = tf.convert_to_tensor(test_targets_scaled, dtype=tf.float32
 # DEFINE THE PINNs MODEL (5 Hidden Layers, 60 Neurons Each)
 def create_pinn_model(input_shape, output_shape):
     inputs = keras.Input(shape=(input_shape,))
-    
+   
     x = layers.Dense(60, activation="relu", kernel_regularizer=keras.regularizers.l2(0.001))(inputs)
     for _ in range(4):  # 5 hidden layers in total
         x = layers.Dropout(0.3)(x)
         x = layers.Dense(60, activation="relu", kernel_regularizer=keras.regularizers.l2(0.001))(x)
-
+   
     outputs = layers.Dense(output_shape, activation="linear")(x)
-
     model = keras.Model(inputs=inputs, outputs=outputs)
     return model
 
@@ -107,12 +117,12 @@ class CustomEpochLogger(keras.callbacks.Callback):
         if epoch % 500 == 0:  # Print every 500 epochs
             print(f"Epoch {epoch}: Training Loss = {logs['loss']:.6f}, Validation Loss = {logs['val_loss']:.6f}")
 
-# TRAIN THE MODEL (50,000 Epochs - NO Early Stopping)
+# TRAIN THE MODEL (50,000 Epochs)
 print("Training Started...")
 history = pinn_model.fit(
     train_features_tensor, train_targets_tensor,
     epochs=50000, batch_size=512, validation_split=0.2, verbose=0,
-    callbacks=[CustomEpochLogger()]  # No EarlyStopping
+    callbacks=[CustomEpochLogger(), keras.callbacks.EarlyStopping(monitor='val_loss', patience=500, restore_best_weights=True)]
 )
 
 # PLOT TRAINING LOSS CURVE
@@ -124,15 +134,15 @@ plt.ylabel('Loss')
 plt.legend()
 plt.title('Training vs Validation Loss')
 plt.grid()
-plt.show()
+plt.savefig("/media/ubuntu/CLEM/my_env/Pinns_aircraft/training_loss_plot.png")  # Save plot as file
 
 # EVALUATE MODEL ON TEST SET
 test_loss = pinn_model.evaluate(test_features_tensor, test_targets_tensor, verbose=1)
 print(f"Final Test Loss: {test_loss:.6f}")
 
-# SAVE TRAINED MODEL
-pinn_model.save("pinns_tf_optimized_model.h5")
-print("Optimized PINNs Model Saved.")
+# SAVE TRAINED MODEL IN KERAS FORMAT
+pinn_model.save("/media/ubuntu/CLEM/my_env/Pinns_aircraft/pinns_tf_optimized_model.keras")
+print("Optimized PINNs Model Saved in Keras Format.")
 
 # COMPUTE ERROR METRICS
 predictions = pinn_model.predict(test_features_tensor)
@@ -152,4 +162,3 @@ print(f"NRMSE: {nrmse:.2f}%")
 print(f"NMBE: {nmbe:.2f}%")
 print(f"REm: {rem:.2f}%")
 print("Error Metric Calculation Completed!")
-
